@@ -171,6 +171,8 @@ export function App() {
     }, 0);
   const allInComputeRateUsdPerKWh =
     summary.computeMWh === 0 ? 0 : computeAllInCostUsd / (summary.computeMWh * 1000);
+  const netAllInMiningRateUsdPerKWh =
+    summary.computeMWh === 0 ? 0 : (computeAllInCostUsd - summary.sellBackRevenueUsd) / (summary.computeMWh * 1000);
   const liveAllInRateUsdPerKWh = data?.livePrice
     ? data.livePrice.priceUsdPerMWh / 1000 +
       modernAdderModel.deliveredAdderAfterFourCpUsdPerKWh
@@ -255,7 +257,7 @@ export function App() {
             </div>
           </div>
           <p className="muted">
-            Clean operator view for `LZ_SOUTH` pricing, curtailment thresholds, modeled sell-back
+            Clean operator view for `LZ_SOUTH` pricing, mining thresholds, modeled sell-back
             windows, and uptime at the Lolita site.
           </p>
           <div className="header-meta">
@@ -350,12 +352,12 @@ export function App() {
 
         <section className="summary-strip">
           <div className="summary-pill panel">
-            <span className="muted small">Compute Uptime</span>
+            <span className="muted small">Mining Uptime</span>
             <strong>{summary.computeUptimePct.toFixed(1)}%</strong>
           </div>
           <div className="summary-pill panel">
-            <span className="muted small">All-In Compute Cost</span>
-            <strong>${allInComputeRateUsdPerKWh.toFixed(4)}/kWh</strong>
+            <span className="muted small">All-In Net Mining Cost</span>
+            <strong>${netAllInMiningRateUsdPerKWh.toFixed(4)}/kWh</strong>
           </div>
           <div className="summary-pill panel">
             <span className="muted small">Sell-Back Revenue</span>
@@ -377,7 +379,7 @@ export function App() {
           <MetricCard
             label="Delivered Adders"
             value={`${(deliveredAdderAfterCreditUsdPerKWh * 100).toFixed(2)}¢`}
-            detail="Modeled from AEP primary-service tariff, bill adders, taxes, and 4CP-sensitive TCRF"
+            detail="After delivery-side credits including ADFIT and modeled 4CP-sensitive TCRF savings"
             values={prices}
           />
           <MetricCard
@@ -387,9 +389,9 @@ export function App() {
             values={decisions.map((item) => (item.status === "curtail" ? item.priceUsdPerMWh : 0))}
           />
           <MetricCard
-            label="Net Delivered Rate"
-            value={`$${allInComputeRateUsdPerKWh.toFixed(4)}`}
-            detail="Market price plus billed adders and 4CP credit"
+            label="All-In Net Rate"
+            value={`$${netAllInMiningRateUsdPerKWh.toFixed(4)}`}
+            detail="All power costs net of delivery credits and modeled sell-back revenue"
             values={decisions.map((item) => (item.status === "sell_back" ? item.priceUsdPerMWh : 0))}
           />
         </section>
