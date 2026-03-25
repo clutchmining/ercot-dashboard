@@ -325,29 +325,49 @@ function normalizeRows(rows: Record<string, unknown>[], fileName: string): Price
 }
 
 async function scrapeLiveSouthPrice(): Promise<LivePrice | null> {
-  const response = await fetch("https://www.ercot.com/content/cdr/html/hb_lz.html");
-  if (!response.ok) {
-    return null;
-  }
-  const html = await response.text();
-  const updatedMatch = html.match(/Last Updated:\s*([^<]+)/i);
-  const southRowMatch = html.match(
-    /<tr>\s*<td[^>]*>\s*(?:HB_SOUTH|LZ_SOUTH)\s*<\/td>\s*<td[^>]*>\s*([-.0-9]+)\s*<\/td>/i
-  );
-  const legacyMatch = html.match(/(?:HB_SOUTH|LZ_SOUTH)\s*\|\s*([-0-9.]+)/i);
+  const sources = [
+    {
+      url: "https://www.ercot.com/content/cdr/html/real_time_spp.html",
+      settlementPoint: "LZ_SOUTH",
+      source: "ERCOT real_time_spp.html"
+    },
+    {
+      url: "https://www.ercot.com/content/cdr/html/hb_lz.html",
+      settlementPoint: "HB_SOUTH",
+      source: "ERCOT hb_lz.html"
+    }
+  ];
 
-  const parsedPrice = Number(southRowMatch?.[1] ?? legacyMatch?.[1]);
-  if (Number.isNaN(parsedPrice)) {
-    return null;
+  for (const target of sources) {
+    const response = await fetch(target.url);
+    if (!response.ok) {
+      continue;
+    }
+
+    const html = await response.text();
+    const updatedMatch = html.match(/Last Updated:\s*([^<]+)/i);
+    const rowMatch = html.match(
+      new RegExp(
+        `<tr>\\s*<td[^>]*>\\s*${target.settlementPoint}\\s*<\\/td>\\s*<td[^>]*>\\s*([-.0-9]+)\\s*<\\/td>`,
+        "i"
+      )
+    );
+    const legacyMatch = html.match(new RegExp(`${target.settlementPoint}\\s*\\|\\s*([-0-9.]+)`, "i"));
+    const parsedPrice = Number(rowMatch?.[1] ?? legacyMatch?.[1]);
+    if (Number.isNaN(parsedPrice)) {
+      continue;
+    }
+
+    const updatedAt = updatedMatch?.[1]?.trim() ?? new Date().toISOString();
+    return {
+      settlementPoint: target.settlementPoint,
+      priceUsdPerMWh: parsedPrice,
+      publishedAt: new Date(updatedAt).toISOString(),
+      source: target.source
+    };
   }
 
-  const updatedAt = updatedMatch?.[1]?.trim() ?? new Date().toISOString();
-  return {
-    settlementPoint: "HB_SOUTH",
-    priceUsdPerMWh: parsedPrice,
-    publishedAt: new Date(updatedAt).toISOString(),
-    source: "ERCOT hb_lz.html"
-  };
+  return null;
 }
 
 app.get("/api/health", (_req, res) => {
