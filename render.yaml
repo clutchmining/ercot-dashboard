@@ -10,12 +10,6 @@ services:
         value: 0.0.0.0
       - key: DATA_DIR
         value: /var/data
-      - key: DASHBOARD_AUTH_ENABLED
-        value: "true"
-      - key: DASHBOARD_USERNAME
-        sync: false
-      - key: DASHBOARD_PASSWORD
-        sync: false
     disk:
       name: ercot-dashboard-data
       mountPath: /var/data

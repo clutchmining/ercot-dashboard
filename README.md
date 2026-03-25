@@ -35,14 +35,6 @@ npm start
 ## Render deployment
 
 This repo includes [render.yaml](/Users/jl/energy-price-app/render.yaml) for a single-service deploy.
-
-Required environment variables:
-
-- `DASHBOARD_USERNAME`
-- `DASHBOARD_PASSWORD`
-
-
-
 The service uses a persistent disk mounted at `/var/data` so imported ERCOT files, saved strike settings, and uploaded documents persist across deploys.
 
 This is intentionally lighter than standing up Grafana plus a separate time-series database. If you want, the next step can be:

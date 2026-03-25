@@ -39,6 +39,7 @@ interface LivePrice {
 }
 
 const rootDir = process.cwd();
+const bundledDataDir = path.join(rootDir, "data");
 const dataDir = process.env.DATA_DIR ?? path.join(rootDir, "data");
 const uploadDir = path.join(dataDir, "uploads");
 const pricePath = path.join(dataDir, "history.json");
@@ -46,7 +47,7 @@ const docsPath = path.join(dataDir, "documents.json");
 const configPath = path.join(dataDir, "strike-config.json");
 const app = express();
 const upload = multer({ dest: uploadDir });
-const authEnabled = process.env.NODE_ENV === "production" || process.env.DASHBOARD_AUTH_ENABLED === "true";
+const authEnabled = process.env.DASHBOARD_AUTH_ENABLED === "true";
 const dashboardUsername = process.env.DASHBOARD_USERNAME;
 const dashboardPassword = process.env.DASHBOARD_PASSWORD;
 
@@ -92,14 +93,94 @@ app.use((req, res, next) => {
 
 async function ensureStorage() {
   await fs.mkdir(uploadDir, { recursive: true });
-  await seedIfMissing(configPath, defaultConfig);
-  await seedIfMissing(pricePath, []);
-  await seedIfMissing(docsPath, []);
+  await seedConfig();
+  await seedHistory();
+  await seedDocuments();
 }
 
 async function seedIfMissing(target: string, value: unknown) {
   if (!existsSync(target)) {
     await fs.writeFile(target, JSON.stringify(value, null, 2));
+  }
+}
+
+async function copyBundledJsonIfAvailable(target: string, bundledFileName: string) {
+  const bundledPath = path.join(bundledDataDir, bundledFileName);
+  if (!existsSync(bundledPath)) {
+    return false;
+  }
+
+  await fs.copyFile(bundledPath, target);
+  return true;
+}
+
+async function seedConfig() {
+  if (!existsSync(configPath)) {
+    const copied = await copyBundledJsonIfAvailable(configPath, "strike-config.json");
+    if (!copied) {
+      await fs.writeFile(configPath, JSON.stringify(defaultConfig, null, 2));
+    }
+    return;
+  }
+
+  try {
+    const current = await readJson<StrikeConfig>(configPath);
+    if (!current || typeof current.siteLoadMw !== "number") {
+      throw new Error("Invalid config");
+    }
+  } catch {
+    const copied = await copyBundledJsonIfAvailable(configPath, "strike-config.json");
+    if (!copied) {
+      await fs.writeFile(configPath, JSON.stringify(defaultConfig, null, 2));
+    }
+  }
+}
+
+async function seedHistory() {
+  if (!existsSync(pricePath)) {
+    const copied = await copyBundledJsonIfAvailable(pricePath, "history.json");
+    if (!copied) {
+      await fs.writeFile(pricePath, JSON.stringify([], null, 2));
+    }
+    return;
+  }
+
+  try {
+    const current = await readJson<PricePoint[]>(pricePath);
+    if (Array.isArray(current) && current.length > 0) {
+      return;
+    }
+  } catch {
+    // fall through and replace from bundle
+  }
+
+  const copied = await copyBundledJsonIfAvailable(pricePath, "history.json");
+  if (!copied) {
+    await fs.writeFile(pricePath, JSON.stringify([], null, 2));
+  }
+}
+
+async function seedDocuments() {
+  if (!existsSync(docsPath)) {
+    const copied = await copyBundledJsonIfAvailable(docsPath, "documents.json");
+    if (!copied) {
+      await fs.writeFile(docsPath, JSON.stringify([], null, 2));
+    }
+    return;
+  }
+
+  try {
+    const current = await readJson<DocumentRecord[]>(docsPath);
+    if (Array.isArray(current) && current.length > 0) {
+      return;
+    }
+  } catch {
+    // fall through and replace from bundle when possible
+  }
+
+  const copied = await copyBundledJsonIfAvailable(docsPath, "documents.json");
+  if (!copied) {
+    await fs.writeFile(docsPath, JSON.stringify([], null, 2));
   }
 }
 
