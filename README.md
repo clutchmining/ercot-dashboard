@@ -41,10 +41,7 @@ Required environment variables:
 - `DASHBOARD_USERNAME`
 - `DASHBOARD_PASSWORD`
 
-Recommended values for the current share:
 
-- username: `Clutch`
-- password: `ClutchRule$1`
 
 The service uses a persistent disk mounted at `/var/data` so imported ERCOT files, saved strike settings, and uploaded documents persist across deploys.
 
