@@ -6,8 +6,6 @@ services:
     buildCommand: npm ci && npm run build
     startCommand: npm start
     envVars:
-      - key: NODE_ENV
-        value: production
       - key: HOST
         value: 0.0.0.0
       - key: DATA_DIR
