@@ -1,0 +1,5 @@
+{
+  "siteLoadMw": 7.5,
+  "curtailStrikeUsdPerMWh": 75,
+  "sellBackStrikeUsdPerMWh": 150
+}

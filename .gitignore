@@ -1,0 +1,11 @@
+node_modules/
+dist/
+.DS_Store
+
+data/uploads/
+data/documents.json
+data/source-docs/
+data/ercot/
+
+.env
+.env.*
