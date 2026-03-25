@@ -266,14 +266,11 @@ app.get("/api/health", (_req, res) => {
   res.json({ ok: true });
 });
 
-app.get("/", (_req, res) => {
-  if (process.env.NODE_ENV === "production") {
-    res.status(404).end();
-    return;
-  }
-
+if (process.env.NODE_ENV !== "production") {
+  app.get("/", (_req, res) => {
   res.type("text/plain").send("Clutch Mining dashboard API is running. Open http://localhost:5173 for the UI.");
-});
+  });
+}
 
 app.get("/api/dashboard", async (_req, res) => {
   await ensureStorage();
