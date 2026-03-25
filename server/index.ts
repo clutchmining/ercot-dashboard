@@ -326,18 +326,25 @@ function normalizeRows(rows: Record<string, unknown>[], fileName: string): Price
 
 async function scrapeLiveSouthPrice(): Promise<LivePrice | null> {
   const response = await fetch("https://www.ercot.com/content/cdr/html/hb_lz.html");
+  if (!response.ok) {
+    return null;
+  }
   const html = await response.text();
   const updatedMatch = html.match(/Last Updated:\s*([^<]+)/i);
-  const southMatch = html.match(/LZ_SOUTH\s*\|\s*([-0-9.]+)/i);
+  const southRowMatch = html.match(
+    /<tr>\s*<td[^>]*>\s*(?:HB_SOUTH|LZ_SOUTH)\s*<\/td>\s*<td[^>]*>\s*([-.0-9]+)\s*<\/td>/i
+  );
+  const legacyMatch = html.match(/(?:HB_SOUTH|LZ_SOUTH)\s*\|\s*([-0-9.]+)/i);
 
-  if (!southMatch) {
+  const parsedPrice = Number(southRowMatch?.[1] ?? legacyMatch?.[1]);
+  if (Number.isNaN(parsedPrice)) {
     return null;
   }
 
   const updatedAt = updatedMatch?.[1]?.trim() ?? new Date().toISOString();
   return {
-    settlementPoint: "LZ_SOUTH",
-    priceUsdPerMWh: Number(southMatch[1]),
+    settlementPoint: "HB_SOUTH",
+    priceUsdPerMWh: parsedPrice,
     publishedAt: new Date(updatedAt).toISOString(),
     source: "ERCOT hb_lz.html"
   };
