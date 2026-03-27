@@ -13,10 +13,16 @@ const emptyConfig: StrikeConfig = {
 
 const billAdderModel = {
   fixedRetailAdderUsdPerKWh: 0.00286,
-  marketPassThroughUsdPerKWh: 0.0030263427464008856,
+  marketPassThroughUsdPerKWh: 0.0033828449328449344,
   tdspUsdPerKWh: 0.02913,
-  taxesUsdPerKWh: 0.0035799464747139167,
-  taxRate: 0.06391492881997778
+  taxesUsdPerKWh: 0.003035800773300773,
+  taxRate: 0.06887661141804789
+};
+
+const ersModel = {
+  realizedRevenueUsd: 10092.6972,
+  baselineUsageKWh: 7948800,
+  ytdChargeUsdPerKWh: 0.00002106227106227106
 };
 
 const aepPrimaryDeliveryTariff = {
@@ -158,6 +164,9 @@ export function App() {
     legacyDeliveredAdderUsdPerKWh * (1 - modernYearShare) +
     modernAdderModel.deliveredAdderAfterFourCpUsdPerKWh * modernYearShare;
   const weightedFourCpCreditUsdPerKWh = modernAdderModel.fourCpCreditUsdPerKWh * modernYearShare;
+  const realizedErsRevenueCreditUsdPerKWh = ersModel.realizedRevenueUsd / ersModel.baselineUsageKWh;
+  const netErsCreditUsdPerKWh = Math.max(realizedErsRevenueCreditUsdPerKWh - ersModel.ytdChargeUsdPerKWh, 0);
+  const ersOffsetUsd = summary.computeMWh * 1000 * netErsCreditUsdPerKWh;
   const computeAllInCostUsd = decisions
     .filter((item) => item.status === "compute")
     .reduce((sum, item) => {
@@ -170,12 +179,15 @@ export function App() {
       return sum + (item.priceUsdPerMWh + intervalAdderUsdPerMWh) * intervalMWh;
     }, 0);
   const allInComputeRateUsdPerKWh =
-    summary.computeMWh === 0 ? 0 : computeAllInCostUsd / (summary.computeMWh * 1000);
+    summary.computeMWh === 0 ? 0 : (computeAllInCostUsd - ersOffsetUsd) / (summary.computeMWh * 1000);
   const netAllInMiningRateUsdPerKWh =
-    summary.computeMWh === 0 ? 0 : (computeAllInCostUsd - summary.sellBackRevenueUsd) / (summary.computeMWh * 1000);
+    summary.computeMWh === 0
+      ? 0
+      : (computeAllInCostUsd - summary.sellBackRevenueUsd - ersOffsetUsd) / (summary.computeMWh * 1000);
   const liveAllInRateUsdPerKWh = data?.livePrice
     ? data.livePrice.priceUsdPerMWh / 1000 +
-      modernAdderModel.deliveredAdderAfterFourCpUsdPerKWh
+      modernAdderModel.deliveredAdderAfterFourCpUsdPerKWh -
+      netErsCreditUsdPerKWh
     : 0;
 
   async function saveConfig() {
@@ -391,7 +403,7 @@ export function App() {
           <MetricCard
             label="All-In Net Rate"
             value={`$${netAllInMiningRateUsdPerKWh.toFixed(4)}`}
-            detail="All power costs net of delivery credits and modeled sell-back revenue"
+            detail="All power costs net of delivery credits, realized ERS offset, and modeled sell-back revenue"
             values={decisions.map((item) => (item.status === "sell_back" ? item.priceUsdPerMWh : 0))}
           />
         </section>
@@ -425,6 +437,10 @@ export function App() {
                 {((modernAdderModel.marketPassThroughUsdPerKWh + modernAdderModel.eecrfUsdPerKWh) * 100).toFixed(2)}
                 ¢/kWh
               </strong>
+            </div>
+            <div>
+              <span className="muted small">Realized ERS offset</span>
+              <strong>{(netErsCreditUsdPerKWh * 100).toFixed(2)}¢/kWh</strong>
             </div>
             <div>
               <span className="muted small">TDSP / delivery at current load</span>
