@@ -25,6 +25,11 @@ const ersModel = {
   ytdChargeUsdPerKWh: 0.00002106227106227106
 };
 
+const defaultErsOffsetUsdPerKWh = Math.max(
+  ersModel.realizedRevenueUsd / ersModel.baselineUsageKWh - ersModel.ytdChargeUsdPerKWh,
+  0
+);
+
 const aepPrimaryDeliveryTariff = {
   customerChargeUsdPerMonth: 2.15,
   meterChargeUsdPerMonth: 164.56,
@@ -113,6 +118,7 @@ function calculateModernAdderModel(siteLoadMw: number, computeUptimePct: number,
 export function App() {
   const [data, setData] = useState<DashboardPayload | null>(null);
   const [config, setConfig] = useState<StrikeConfig>(emptyConfig);
+  const [ersOffsetUsdPerKWh, setErsOffsetUsdPerKWh] = useState(defaultErsOffsetUsdPerKWh);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string>("");
   const [selectedYear, setSelectedYear] = useState<string>("2026");
@@ -164,9 +170,7 @@ export function App() {
     legacyDeliveredAdderUsdPerKWh * (1 - modernYearShare) +
     modernAdderModel.deliveredAdderAfterFourCpUsdPerKWh * modernYearShare;
   const weightedFourCpCreditUsdPerKWh = modernAdderModel.fourCpCreditUsdPerKWh * modernYearShare;
-  const realizedErsRevenueCreditUsdPerKWh = ersModel.realizedRevenueUsd / ersModel.baselineUsageKWh;
-  const netErsCreditUsdPerKWh = Math.max(realizedErsRevenueCreditUsdPerKWh - ersModel.ytdChargeUsdPerKWh, 0);
-  const ersOffsetUsd = summary.computeMWh * 1000 * netErsCreditUsdPerKWh;
+  const ersOffsetUsd = summary.computeMWh * 1000 * ersOffsetUsdPerKWh;
   const computeAllInCostUsd = decisions
     .filter((item) => item.status === "compute")
     .reduce((sum, item) => {
@@ -187,7 +191,7 @@ export function App() {
   const liveAllInRateUsdPerKWh = data?.livePrice
     ? data.livePrice.priceUsdPerMWh / 1000 +
       modernAdderModel.deliveredAdderAfterFourCpUsdPerKWh -
-      netErsCreditUsdPerKWh
+      ersOffsetUsdPerKWh
     : 0;
 
   async function saveConfig() {
@@ -351,11 +355,25 @@ export function App() {
                 })),
               " $/MWh"
             )}
+            {renderSlider(
+              "ERS offset",
+              Number((ersOffsetUsdPerKWh * 100).toFixed(3)),
+              0,
+              2,
+              0.001,
+              (value) => setErsOffsetUsdPerKWh(value / 100),
+              " ¢/kWh"
+            )}
           </div>
           <div className="controls-footer">
-            <p className="muted small">
-              Sliders update the scenario immediately. Save only if you want the thresholds persisted.
-            </p>
+            <div>
+              <p className="muted small">
+                Sliders update the scenario immediately. Save only if you want the thresholds persisted.
+              </p>
+              <p className="muted small">
+                ERS offset is a net credit assumption from realized program revenue minus ERS-related passthrough charges.
+              </p>
+            </div>
             <button onClick={saveConfig} disabled={busy}>
               Save
             </button>
@@ -415,9 +433,9 @@ export function App() {
           </div>
           <StatusBars decisions={decisions} />
           <p className="muted small contract-note">
-            Sell-back shown here is a modeled gross opportunity. Agreement review suggests the firm
-            dispatch value is tied to avoided purchases and liquidation of energy already procured,
-            not an unrestricted right to export every curtailed MWh.
+            Retail agreement review indicates hourly usage above or below the contracted block can be
+            bought or sold at applicable RTM SPP, but this should still be treated as a block-settlement
+            mechanism rather than an unrestricted merchant export right for every curtailed MWh.
           </p>
         </section>
 
@@ -440,7 +458,7 @@ export function App() {
             </div>
             <div>
               <span className="muted small">Realized ERS offset</span>
-              <strong>{(netErsCreditUsdPerKWh * 100).toFixed(2)}¢/kWh</strong>
+              <strong>{(ersOffsetUsdPerKWh * 100).toFixed(2)}¢/kWh</strong>
             </div>
             <div>
               <span className="muted small">TDSP / delivery at current load</span>
