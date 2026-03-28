@@ -12,21 +12,21 @@ const emptyConfig: StrikeConfig = {
 };
 
 const billAdderModel = {
-  fixedRetailAdderUsdPerKWh: 0.00286,
-  marketPassThroughUsdPerKWh: 0.0033828449328449344,
+  fixedRetailAdderUsdPerKWh: 0.002859997809899255,
+  marketPassThroughUsdPerKWh: 0.003623415827128045,
   tdspUsdPerKWh: 0.02913,
-  taxesUsdPerKWh: 0.003035800773300773,
-  taxRate: 0.06887661141804789
+  taxesUsdPerKWh: 0.003202095196379033,
+  taxRate: 0.0672311013834304
 };
 
 const ersModel = {
   realizedRevenueUsd: 10092.6972,
   baselineUsageKWh: 7948800,
-  ytdChargeUsdPerKWh: 0.00002106227106227106
+  blendedInvoiceChargeUsdPerKWh: 0.0000075558475689881735
 };
 
 const defaultErsOffsetUsdPerKWh = Math.max(
-  ersModel.realizedRevenueUsd / ersModel.baselineUsageKWh - ersModel.ytdChargeUsdPerKWh,
+  ersModel.realizedRevenueUsd / ersModel.baselineUsageKWh - ersModel.blendedInvoiceChargeUsdPerKWh,
   0
 );
 
@@ -371,7 +371,7 @@ export function App() {
                 Sliders update the scenario immediately. Save only if you want the thresholds persisted.
               </p>
               <p className="muted small">
-                ERS offset is a net credit assumption from realized program revenue minus ERS-related passthrough charges.
+                ERS offset is a net credit assumption from realized program revenue minus ERS-related charges shown in the 2024-2026 bills.
               </p>
             </div>
             <button onClick={saveConfig} disabled={busy}>
@@ -409,7 +409,7 @@ export function App() {
           <MetricCard
             label="Delivered Adders"
             value={`${(deliveredAdderAfterCreditUsdPerKWh * 100).toFixed(2)}¢`}
-            detail="After delivery-side credits including ADFIT and modeled 4CP-sensitive TCRF savings"
+            detail="After delivery-side credits, using 2024-2026 invoice calibration plus modeled 4CP-sensitive TCRF savings"
             values={prices}
           />
           <MetricCard
@@ -442,7 +442,7 @@ export function App() {
         <section className="panel">
           <div className="panel-header">
             <h3>All-In Rate Stack</h3>
-            <span>2024 bill calibration</span>
+            <span>2024-2026 bill calibration</span>
           </div>
           <div className="opportunity-metrics">
             <div>
