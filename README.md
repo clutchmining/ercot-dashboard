@@ -46,6 +46,8 @@ This writes files into `exports/`:
 - `dashboard-intervals-flat.csv`: clean interval-level export for pivot tables or custom workbook work
 - `dashboard-export-notes.txt`: quick usage notes
 
+The dashboard UI can also download a real `.xlsx` workbook with `Inputs`, `Summary`, `Intervals`, and `Notes` tabs.
+
 Optional filters:
 
 ```bash

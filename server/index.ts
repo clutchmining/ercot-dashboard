@@ -453,6 +453,186 @@ function toCsv(rows: Array<Array<string | number>>) {
   return rows.map((row) => row.map(csvEscape).join(",")).join("\n");
 }
 
+function buildExportWorkbook(history: PricePoint[], scenario: ExportScenario, selectedYear: string, selectedMarket: string) {
+  const filteredHistory = history.filter((point) => {
+    const matchesYear = selectedYear === "all" || point.intervalStart.startsWith(selectedYear);
+    const matchesMarket = selectedMarket === "all" || point.market === selectedMarket;
+    return matchesYear && matchesMarket;
+  });
+
+  const workbook = XLSX.utils.book_new();
+
+  const inputsRows: Array<Array<string | number>> = [
+    ["Input", "Value"],
+    ["Site Load (MW)", scenario.siteLoadMw],
+    ["Curtail Strike ($/MWh)", scenario.curtailStrikeUsdPerMWh],
+    ["Sell-Back Strike ($/MWh)", scenario.sellBackStrikeUsdPerMWh],
+    ["ERS Offset (¢/kWh)", Number((scenario.ersOffsetUsdPerKWh * 100).toFixed(6))],
+    ["Year Filter", selectedYear],
+    ["Market Filter", selectedMarket],
+    ["Retail Consulting Adder (¢/kWh)", 0],
+    ["Other Market Pass-Throughs (¢/kWh)", Number((billAdderModel.marketPassThroughUsdPerKWh * 100).toFixed(6))],
+    ["Effective Tax Rate", billAdderModel.taxRate],
+    [
+      "Legacy 2024 Delivered Adder (¢/kWh)",
+      Number(
+        (
+          (billAdderModel.fixedRetailAdderUsdPerKWh +
+            billAdderModel.marketPassThroughUsdPerKWh +
+            billAdderModel.tdspUsdPerKWh +
+            billAdderModel.taxesUsdPerKWh) *
+          100
+        ).toFixed(6)
+      )
+    ],
+    ["Generated At", new Date().toISOString()]
+  ];
+  const inputsSheet = XLSX.utils.aoa_to_sheet(inputsRows);
+  inputsSheet["!cols"] = [{ wch: 34 }, { wch: 18 }];
+
+  const summaryRows: Array<Array<string | number>> = [
+    ["Summary Metric", "Formula Result"],
+    ["Total Modeled Hours", ""],
+    ["Compute Hours", ""],
+    ["Mining Uptime", ""],
+    ["4CP Eligibility Share", ""],
+    ["Modern Delivered Adder After 4CP (¢/kWh)", ""],
+    ["4CP Credit (¢/kWh)", ""],
+    ["Compute MWh", ""],
+    ["Sell-Back Revenue ($)", ""],
+    ["Gross All-In Mining Cost ($)", ""],
+    ["ERS Credit ($)", ""],
+    ["Net All-In Mining Cost ($)", ""],
+    ["Gross All-In Rate ($/kWh)", ""],
+    ["Net All-In Rate ($/kWh)", ""],
+    ["Curtailed Exposure Avoided ($)", ""],
+    ["Sell-Back Hours", ""]
+  ];
+  const summarySheet = XLSX.utils.aoa_to_sheet(summaryRows);
+  summarySheet["!cols"] = [{ wch: 38 }, { wch: 18 }];
+
+  const intervalsHeaders = [
+    "Interval Start",
+    "Year",
+    "Market",
+    "Settlement Point",
+    "Source",
+    "Price ($/MWh)",
+    "Hours",
+    "Included",
+    "4CP Managed",
+    "Status",
+    "Interval MWh",
+    "Compute MWh",
+    "Curtail MWh",
+    "Sell-Back MWh",
+    "Market Cost ($)",
+    "Sell-Back Revenue ($)",
+    "Delivered Adder (¢/kWh)",
+    "Delivered Adder ($/MWh)",
+    "All-In Compute Cost ($)",
+    "ERS Credit ($)",
+    "Curtailed Exposure ($)",
+    "Net Mining Impact ($)"
+  ];
+  const intervalRows: Array<Array<string | number>> = [intervalsHeaders];
+  filteredHistory.forEach((point) => {
+    intervalRows.push([
+      point.intervalStart,
+      new Date(point.intervalStart).getUTCFullYear(),
+      point.market,
+      point.settlementPoint,
+      point.source,
+      point.priceUsdPerMWh,
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      ""
+    ]);
+  });
+  const intervalsSheet = XLSX.utils.aoa_to_sheet(intervalRows);
+  intervalsSheet["!cols"] = [
+    { wch: 24 }, { wch: 8 }, { wch: 8 }, { wch: 18 }, { wch: 42 }, { wch: 14 }, { wch: 10 }, { wch: 10 },
+    { wch: 12 }, { wch: 12 }, { wch: 12 }, { wch: 12 }, { wch: 12 }, { wch: 14 }, { wch: 16 }, { wch: 18 },
+    { wch: 20 }, { wch: 20 }, { wch: 20 }, { wch: 16 }, { wch: 20 }, { wch: 18 }
+  ];
+
+  const lastIntervalRow = filteredHistory.length + 1;
+  const range = (column: string) => `Intervals!$${column}$2:$${column}$${lastIntervalRow}`;
+  const setFormula = (sheet: XLSX.WorkSheet, address: string, formula: string, type: "n" | "s" = "n") => {
+    sheet[address] = { t: type, f: formula };
+  };
+
+  setFormula(summarySheet, "B2", `SUMPRODUCT(${range("G")},${range("H")})`);
+  setFormula(summarySheet, "B3", `SUMIFS(${range("G")},${range("J")},"compute",${range("H")},1)`);
+  setFormula(summarySheet, "B4", "IF(B2=0,0,B3/B2)");
+  setFormula(summarySheet, "B5", `IF(B2=0,0,SUMPRODUCT(${range("G")},${range("H")},${range("I")})/B2)`);
+  setFormula(
+    summarySheet,
+    "B6",
+    "((((2.15+164.56+(Inputs!$B$2*1000)*(4.899+2.337481+0.350849+0.188063-0.010529+0.043582+0.2275))+((2.15+164.56+(Inputs!$B$2*1000)*4.899)*0.00238))+(((Inputs!$B$2*1000)*730*MAX(B4,0.01))*(0.000502+(Inputs!$B$8/100)+(Inputs!$B$9/100))))*(1+Inputs!$B$10))/(((Inputs!$B$2*1000)*730*MAX(B4,0.01))))*100"
+  );
+  setFormula(summarySheet, "B7", `=(((Inputs!$B$2*1000)*4.966423*B5)*(1+Inputs!$B$10)/((Inputs!$B$2*1000)*730*MAX(B4,0.01)))*100`.slice(1));
+  setFormula(summarySheet, "B8", `SUM(${range("L")})`);
+  setFormula(summarySheet, "B9", `SUM(${range("P")})`);
+  setFormula(summarySheet, "B10", `SUM(${range("S")})`);
+  setFormula(summarySheet, "B11", `SUM(${range("T")})`);
+  setFormula(summarySheet, "B12", "B10-B9-B11");
+  setFormula(summarySheet, "B13", "IF(B8=0,0,B10/(B8*1000))");
+  setFormula(summarySheet, "B14", "IF(B8=0,0,B12/(B8*1000))");
+  setFormula(summarySheet, "B15", `SUM(${range("U")})`);
+  setFormula(summarySheet, "B16", `SUMIFS(${range("G")},${range("J")},"sell_back",${range("H")},1)`);
+
+  for (let row = 2; row <= lastIntervalRow; row += 1) {
+    setFormula(intervalsSheet, `G${row}`, `IF(C${row}="RTM",5/60,1)`);
+    setFormula(intervalsSheet, `H${row}`, `--(AND(OR(Inputs!$B$6="all",B${row}=Inputs!$B$6),OR(Inputs!$B$7="all",C${row}=Inputs!$B$7)))`);
+    setFormula(intervalsSheet, `I${row}`, `--(B${row}<>2024)`);
+    setFormula(intervalsSheet, `J${row}`, `IF(H${row}=0,"excluded",IF(F${row}>=Inputs!$B$4,"sell_back",IF(F${row}>=Inputs!$B$3,"curtail","compute")))`, "s");
+    setFormula(intervalsSheet, `K${row}`, `Inputs!$B$2*G${row}*H${row}`);
+    setFormula(intervalsSheet, `L${row}`, `IF(J${row}="compute",K${row},0)`);
+    setFormula(intervalsSheet, `M${row}`, `IF(J${row}="curtail",K${row},0)`);
+    setFormula(intervalsSheet, `N${row}`, `IF(J${row}="sell_back",K${row},0)`);
+    setFormula(intervalsSheet, `O${row}`, `IF(J${row}="compute",F${row}*L${row},0)`);
+    setFormula(intervalsSheet, `P${row}`, `IF(J${row}="sell_back",F${row}*N${row},0)`);
+    setFormula(intervalsSheet, `Q${row}`, `IF(B${row}=2024,Inputs!$B$11,Summary!$B$6)`);
+    setFormula(intervalsSheet, `R${row}`, `Q${row}*10`);
+    setFormula(intervalsSheet, `S${row}`, `IF(J${row}="compute",(F${row}+R${row})*L${row},0)`);
+    setFormula(intervalsSheet, `T${row}`, `IF(J${row}="compute",(Inputs!$B$5/100)*L${row}*1000,0)`);
+    setFormula(intervalsSheet, `U${row}`, `IF(J${row}="curtail",F${row}*M${row},0)`);
+    setFormula(intervalsSheet, `V${row}`, `IF(J${row}="compute",-S${row}+T${row},IF(J${row}="sell_back",P${row},0))`);
+  }
+
+  const notesRows: Array<Array<string | number>> = [
+    ["Clutch Mining Excel Export"],
+    ["Use the Inputs tab to edit strike levels, ERS offset, year filter, and market filter."],
+    ["Summary recalculates from the Intervals tab using Excel formulas."],
+    ["Intervals contains one row per ERCOT price interval with formula-driven status and economics."],
+    ["Save the workbook as your scenario base before sharing or making structural edits."]
+  ];
+  const notesSheet = XLSX.utils.aoa_to_sheet(notesRows);
+  notesSheet["!cols"] = [{ wch: 100 }];
+
+  XLSX.utils.book_append_sheet(workbook, inputsSheet, "Inputs");
+  XLSX.utils.book_append_sheet(workbook, summarySheet, "Summary");
+  XLSX.utils.book_append_sheet(workbook, intervalsSheet, "Intervals");
+  XLSX.utils.book_append_sheet(workbook, notesSheet, "Notes");
+  workbook.Workbook = { CalcPr: { fullCalcOnLoad: true } };
+
+  return XLSX.write(workbook, { type: "buffer", bookType: "xlsx" });
+}
+
 function buildExportCsv(
   history: PricePoint[],
   scenario: ExportScenario,
@@ -696,13 +876,25 @@ app.get("/api/export/:mode", async (req, res) => {
 
   const year = typeof req.query.year === "string" ? req.query.year : "all";
   const market = typeof req.query.market === "string" ? req.query.market : "all";
-  const mode = req.params.mode === "flat" ? "flat" : "model";
+  const mode = req.params.mode === "flat" ? "flat" : req.params.mode === "workbook" ? "workbook" : "model";
   const scenario: ExportScenario = {
     siteLoadMw: Number(req.query.siteLoadMw ?? savedConfig.siteLoadMw),
     curtailStrikeUsdPerMWh: Number(req.query.curtailStrikeUsdPerMWh ?? savedConfig.curtailStrikeUsdPerMWh),
     sellBackStrikeUsdPerMWh: Number(req.query.sellBackStrikeUsdPerMWh ?? savedConfig.sellBackStrikeUsdPerMWh),
     ersOffsetUsdPerKWh: Number(req.query.ersOffsetUsdPerKWh ?? 0)
   };
+
+  if (mode === "workbook") {
+    const workbook = buildExportWorkbook(priceHistory, scenario, year, market);
+    const fileName = `clutch-dashboard-workbook-${year}-${market}.xlsx`;
+    res.setHeader(
+      "Content-Type",
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    );
+    res.setHeader("Content-Disposition", `attachment; filename="${fileName}"`);
+    res.send(workbook);
+    return;
+  }
 
   const csv = buildExportCsv(priceHistory, scenario, year, market, mode);
   const fileName = `clutch-dashboard-${mode}-${year}-${market}.csv`;

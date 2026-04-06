@@ -230,7 +230,7 @@ export function App() {
     }
   }
 
-  async function downloadExport(mode: "model" | "flat") {
+  async function downloadExport(mode: "workbook" | "model" | "flat") {
     setMessage("");
     try {
       const params = new URLSearchParams({
@@ -250,7 +250,8 @@ export function App() {
       const url = URL.createObjectURL(blob);
       const anchor = document.createElement("a");
       anchor.href = url;
-      anchor.download = `clutch-dashboard-${mode}-${selectedYear}-${selectedMarket}.csv`;
+      const extension = mode === "workbook" ? "xlsx" : "csv";
+      anchor.download = `clutch-dashboard-${mode}-${selectedYear}-${selectedMarket}.${extension}`;
       document.body.appendChild(anchor);
       anchor.click();
       anchor.remove();
@@ -405,8 +406,11 @@ export function App() {
               </p>
             </div>
             <div className="button-row">
+              <button type="button" className="secondary-button" onClick={() => downloadExport("workbook")}>
+                Download Excel Workbook
+              </button>
               <button type="button" className="secondary-button" onClick={() => downloadExport("model")}>
-                Download Excel Model
+                Download Formula CSV
               </button>
               <button type="button" className="secondary-button" onClick={() => downloadExport("flat")}>
                 Download Flat CSV
