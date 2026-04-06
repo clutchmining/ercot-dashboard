@@ -306,6 +306,13 @@ label {
   gap: 16px;
 }
 
+.button-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
 input,
 button {
   background: rgba(15, 23, 42, 0.92);
@@ -320,6 +327,11 @@ button {
   background: linear-gradient(135deg, #1140b8, #1d63ea);
   border-color: transparent;
   font-weight: 600;
+}
+
+.secondary-button {
+  background: rgba(15, 23, 42, 0.92);
+  border-color: var(--line);
 }
 
 .notice,

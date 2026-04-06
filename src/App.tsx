@@ -230,6 +230,36 @@ export function App() {
     }
   }
 
+  async function downloadExport(mode: "model" | "flat") {
+    setMessage("");
+    try {
+      const params = new URLSearchParams({
+        year: selectedYear,
+        market: selectedMarket,
+        siteLoadMw: String(config.siteLoadMw),
+        curtailStrikeUsdPerMWh: String(config.curtailStrikeUsdPerMWh),
+        sellBackStrikeUsdPerMWh: String(config.sellBackStrikeUsdPerMWh),
+        ersOffsetUsdPerKWh: String(ersOffsetUsdPerKWh)
+      });
+      const response = await fetch(`/api/export/${mode}?${params.toString()}`);
+      if (!response.ok) {
+        throw new Error("Export failed.");
+      }
+
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = `clutch-dashboard-${mode}-${selectedYear}-${selectedMarket}.csv`;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      URL.revokeObjectURL(url);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Export failed.");
+    }
+  }
+
   function renderSlider(
     label: string,
     value: number,
@@ -374,9 +404,17 @@ export function App() {
                 ERS offset is a net credit assumption from realized program revenue minus ERS-related charges shown in the 2025-2026 bills.
               </p>
             </div>
-            <button onClick={saveConfig} disabled={busy}>
-              Save
-            </button>
+            <div className="button-row">
+              <button type="button" className="secondary-button" onClick={() => downloadExport("model")}>
+                Download Excel Model
+              </button>
+              <button type="button" className="secondary-button" onClick={() => downloadExport("flat")}>
+                Download Flat CSV
+              </button>
+              <button onClick={saveConfig} disabled={busy}>
+                Save
+              </button>
+            </div>
           </div>
         </section>
 

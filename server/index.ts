@@ -38,6 +38,10 @@ interface LivePrice {
   source: string;
 }
 
+interface ExportScenario extends StrikeConfig {
+  ersOffsetUsdPerKWh: number;
+}
+
 const rootDir = process.cwd();
 const bundledDataDir = path.join(rootDir, "data");
 const dataDir = process.env.DATA_DIR ?? path.join(rootDir, "data");
@@ -56,6 +60,31 @@ const defaultConfig: StrikeConfig = {
   curtailStrikeUsdPerMWh: 75,
   sellBackStrikeUsdPerMWh: 150
 };
+
+const billAdderModel = {
+  fixedRetailAdderUsdPerKWh: 0,
+  marketPassThroughUsdPerKWh: 0.0037511601549620847,
+  tdspUsdPerKWh: 0.02913,
+  taxesUsdPerKWh: 0.0031956396307286517,
+  taxRate: 0.06887661141804789
+};
+
+const aepPrimaryDeliveryTariff = {
+  customerChargeUsdPerMonth: 2.15,
+  meterChargeUsdPerMonth: 164.56,
+  distributionSystemUsdPerKwMonth: 4.899,
+  tcrfNcpUsdPerKwMonth: 2.337481,
+  tcrf4cpUsdPerKwMonth: 4.966423,
+  dcrfUsdPerKwMonth: 0.350849,
+  eecrfUsdPerKWh: 0.000502,
+  srcUsdPerKwMonth: 0.188063,
+  adfitUsdPerKwMonth: -0.010529,
+  rarUsdPerKwMonth: 0.043582,
+  mobileTeeeUsdPerKwMonth: 0.2275,
+  rceBaseRevenueFactor: 0.00238
+};
+
+const averageBillingHoursPerMonth = 730;
 
 app.use(express.json());
 
@@ -324,6 +353,259 @@ function normalizeRows(rows: Record<string, unknown>[], fileName: string): Price
     .sort((a, b) => a.intervalStart.localeCompare(b.intervalStart));
 }
 
+function getIntervalHours(point: Pick<PricePoint, "market">) {
+  return point.market === "RTM" ? 5 / 60 : 1;
+}
+
+function deriveStatus(point: PricePoint, config: StrikeConfig) {
+  if (point.priceUsdPerMWh >= config.sellBackStrikeUsdPerMWh) {
+    return "sell_back";
+  }
+  if (point.priceUsdPerMWh >= config.curtailStrikeUsdPerMWh) {
+    return "curtail";
+  }
+  return "compute";
+}
+
+function averageHours(points: PricePoint[], config: StrikeConfig, predicate: (item: PricePoint) => boolean) {
+  let matchingHours = 0;
+  let totalHours = 0;
+  for (const point of points) {
+    const intervalHours = getIntervalHours(point);
+    totalHours += intervalHours;
+    if (predicate(point)) {
+      matchingHours += intervalHours;
+    }
+  }
+  return totalHours === 0 ? 0 : matchingHours / totalHours;
+}
+
+function summarizeHistory(points: PricePoint[], config: StrikeConfig) {
+  return points.reduce(
+    (acc, point) => {
+      const status = deriveStatus(point, config);
+      const intervalHours = getIntervalHours(point);
+      const intervalMWh = intervalHours * config.siteLoadMw;
+      acc.totalHours += intervalHours;
+      if (status === "compute") {
+        acc.computeHours += intervalHours;
+        acc.computeMWh += intervalMWh;
+      }
+      return acc;
+    },
+    { totalHours: 0, computeHours: 0, computeMWh: 0 }
+  );
+}
+
+function calculateModernAdderModel(siteLoadMw: number, miningUptimePct: number, fourCpEligibilityShare: number) {
+  const siteLoadKw = siteLoadMw * 1000;
+  const miningLoadFactor = Math.max(miningUptimePct / 100, 0.01);
+  const miningKWhPerMonth = siteLoadKw * averageBillingHoursPerMonth * miningLoadFactor;
+  const baseRevenueUsd =
+    aepPrimaryDeliveryTariff.customerChargeUsdPerMonth +
+    aepPrimaryDeliveryTariff.meterChargeUsdPerMonth +
+    siteLoadKw * aepPrimaryDeliveryTariff.distributionSystemUsdPerKwMonth;
+  const demandChargesUsdPerMonth =
+    aepPrimaryDeliveryTariff.customerChargeUsdPerMonth +
+    aepPrimaryDeliveryTariff.meterChargeUsdPerMonth +
+    siteLoadKw *
+      (aepPrimaryDeliveryTariff.distributionSystemUsdPerKwMonth +
+        aepPrimaryDeliveryTariff.tcrfNcpUsdPerKwMonth +
+        aepPrimaryDeliveryTariff.dcrfUsdPerKwMonth +
+        aepPrimaryDeliveryTariff.srcUsdPerKwMonth +
+        aepPrimaryDeliveryTariff.adfitUsdPerKwMonth +
+        aepPrimaryDeliveryTariff.rarUsdPerKwMonth +
+        aepPrimaryDeliveryTariff.mobileTeeeUsdPerKwMonth) +
+    baseRevenueUsd * aepPrimaryDeliveryTariff.rceBaseRevenueFactor;
+  const variableChargesUsdPerMonth =
+    miningKWhPerMonth *
+    (aepPrimaryDeliveryTariff.eecrfUsdPerKWh +
+      billAdderModel.fixedRetailAdderUsdPerKWh +
+      billAdderModel.marketPassThroughUsdPerKWh);
+  const fourCpAvoidedUsdPerMonth =
+    siteLoadKw * aepPrimaryDeliveryTariff.tcrf4cpUsdPerKwMonth * fourCpEligibilityShare;
+  const pretaxModernUsdPerMonth = demandChargesUsdPerMonth + variableChargesUsdPerMonth;
+  const pretaxWithoutFourCpManagementUsdPerMonth = pretaxModernUsdPerMonth + fourCpAvoidedUsdPerMonth;
+  const taxesAfterFourCpUsdPerMonth = pretaxModernUsdPerMonth * billAdderModel.taxRate;
+  const taxesBeforeFourCpUsdPerMonth = pretaxWithoutFourCpManagementUsdPerMonth * billAdderModel.taxRate;
+
+  return {
+    deliveredAdderAfterFourCpUsdPerKWh:
+      (pretaxModernUsdPerMonth + taxesAfterFourCpUsdPerMonth) / miningKWhPerMonth,
+    fourCpCreditUsdPerKWh:
+      (pretaxWithoutFourCpManagementUsdPerMonth +
+        taxesBeforeFourCpUsdPerMonth -
+        pretaxModernUsdPerMonth -
+        taxesAfterFourCpUsdPerMonth) /
+      miningKWhPerMonth
+  };
+}
+
+function csvEscape(value: unknown) {
+  const stringValue = value == null ? "" : String(value);
+  if (/[",\n]/.test(stringValue)) {
+    return `"${stringValue.replace(/"/g, '""')}"`;
+  }
+  return stringValue;
+}
+
+function toCsv(rows: Array<Array<string | number>>) {
+  return rows.map((row) => row.map(csvEscape).join(",")).join("\n");
+}
+
+function buildExportCsv(
+  history: PricePoint[],
+  scenario: ExportScenario,
+  selectedYear: string,
+  selectedMarket: string,
+  mode: "model" | "flat"
+) {
+  const filteredHistory = history.filter((point) => {
+    const matchesYear = selectedYear === "all" || point.intervalStart.startsWith(selectedYear);
+    const matchesMarket = selectedMarket === "all" || point.market === selectedMarket;
+    return matchesYear && matchesMarket;
+  });
+  const summary = summarizeHistory(filteredHistory, scenario);
+  const miningUptimePct = summary.totalHours === 0 ? 0 : (summary.computeHours / summary.totalHours) * 100;
+  const modernYearShare = averageHours(filteredHistory, scenario, (item) => !item.intervalStart.startsWith("2024"));
+  const fourCpEligibilityShare = averageHours(filteredHistory, scenario, (item) => !item.intervalStart.startsWith("2024"));
+  const modernAdderModel = calculateModernAdderModel(scenario.siteLoadMw, miningUptimePct, fourCpEligibilityShare);
+  const legacyDeliveredAdderUsdPerKWh =
+    billAdderModel.fixedRetailAdderUsdPerKWh +
+    billAdderModel.marketPassThroughUsdPerKWh +
+    billAdderModel.tdspUsdPerKWh +
+    billAdderModel.taxesUsdPerKWh;
+
+  if (mode === "flat") {
+    const rows: Array<Array<string | number>> = [[
+      "interval_start",
+      "market",
+      "settlement_point",
+      "price_usd_per_mwh",
+      "interval_hours",
+      "status",
+      "interval_mwh",
+      "delivered_adder_usd_per_kwh",
+      "delivered_adder_usd_per_mwh",
+      "all_in_compute_cost_usd",
+      "sell_back_revenue_usd",
+      "ers_credit_usd",
+      "curtailed_exposure_usd",
+      "net_mining_impact_usd"
+    ]];
+
+    for (const point of filteredHistory) {
+      const status = deriveStatus(point, scenario);
+      const intervalHours = getIntervalHours(point);
+      const intervalMWh = scenario.siteLoadMw * intervalHours;
+      const deliveredAdderUsdPerKWh = point.intervalStart.startsWith("2024")
+        ? legacyDeliveredAdderUsdPerKWh
+        : modernAdderModel.deliveredAdderAfterFourCpUsdPerKWh;
+      const deliveredAdderUsdPerMWh = deliveredAdderUsdPerKWh * 1000;
+      const allInComputeCostUsd = status === "compute" ? (point.priceUsdPerMWh + deliveredAdderUsdPerMWh) * intervalMWh : 0;
+      const sellBackRevenueUsd = status === "sell_back" ? point.priceUsdPerMWh * intervalMWh : 0;
+      const ersCreditUsd = status === "compute" ? scenario.ersOffsetUsdPerKWh * intervalMWh * 1000 : 0;
+      const curtailedExposureUsd = status === "curtail" ? point.priceUsdPerMWh * intervalMWh : 0;
+      const netMiningImpactUsd = status === "compute" ? -allInComputeCostUsd + ersCreditUsd : status === "sell_back" ? sellBackRevenueUsd : 0;
+
+      rows.push([
+        point.intervalStart,
+        point.market,
+        point.settlementPoint,
+        point.priceUsdPerMWh,
+        intervalHours,
+        status,
+        intervalMWh,
+        deliveredAdderUsdPerKWh,
+        deliveredAdderUsdPerMWh,
+        allInComputeCostUsd,
+        sellBackRevenueUsd,
+        ersCreditUsd,
+        curtailedExposureUsd,
+        netMiningImpactUsd
+      ]);
+    }
+
+    return toCsv(rows);
+  }
+
+  const rows: Array<Array<string | number>> = [];
+  const dataStartRow = 34;
+  const dataEndRow = dataStartRow + filteredHistory.length - 1;
+  const range = (column: string) => `${column}${dataStartRow}:${column}${dataEndRow}`;
+
+  rows.push(["Clutch Mining ERCOT Dashboard Export", new Date().toISOString()]);
+  rows.push(["Open this CSV in Excel. Edit only column B input cells below. Summary formulas will recalculate automatically."]);
+  rows.push([]);
+  rows.push(["Input", "Value"]);
+  rows.push(["Site Load (MW)", scenario.siteLoadMw]);
+  rows.push(["Curtail Strike ($/MWh)", scenario.curtailStrikeUsdPerMWh]);
+  rows.push(["Sell-Back Strike ($/MWh)", scenario.sellBackStrikeUsdPerMWh]);
+  rows.push(["ERS Offset (¢/kWh)", Number((scenario.ersOffsetUsdPerKWh * 100).toFixed(6))]);
+  rows.push(["Year Filter", selectedYear]);
+  rows.push(["Market Filter", selectedMarket]);
+  rows.push(["Retail Consulting Adder (¢/kWh)", 0]);
+  rows.push(["Other Market Pass-Throughs (¢/kWh)", Number((billAdderModel.marketPassThroughUsdPerKWh * 100).toFixed(6))]);
+  rows.push(["Effective Tax Rate", billAdderModel.taxRate]);
+  rows.push(["Legacy 2024 Delivered Adder (¢/kWh)", Number((legacyDeliveredAdderUsdPerKWh * 100).toFixed(6))]);
+  rows.push([]);
+  rows.push(["Summary Metric", "Formula Result"]);
+  rows.push(["Total Modeled Hours", `=SUMPRODUCT(${range("G")},${range("H")})`]);
+  rows.push(["Compute Hours", `=SUMIFS(${range("G")},${range("J")},"compute",${range("H")},1)`]);
+  rows.push(["Mining Uptime", "=IF(B17=0,0,B18/B17)"]);
+  rows.push(["4CP Eligibility Share", `=IF(B17=0,0,SUMPRODUCT(${range("G")},${range("H")},${range("I")})/B17)`]);
+  rows.push([
+    "Modern Delivered Adder After 4CP (¢/kWh)",
+    "=((((2.15+164.56+($B$5*1000)*(4.899+2.337481+0.350849+0.188063-0.010529+0.043582+0.2275))+((2.15+164.56+($B$5*1000)*4.899)*0.00238))+((($B$5*1000)*730*MAX(B19,0.01))*(0.000502+($B$11/100)+($B$12/100))))*(1+$B$13))/((($B$5*1000)*730*MAX(B19,0.01))))*100"
+  ]);
+  rows.push(["4CP Credit (¢/kWh)", `=((($B$5*1000)*4.966423*B20)*(1+$B$13)/(($B$5*1000)*730*MAX(B19,0.01)))*100`]);
+  rows.push(["Compute MWh", `=SUM(${range("L")})`]);
+  rows.push(["Sell-Back Revenue ($)", `=SUM(${range("P")})`]);
+  rows.push(["Gross All-In Mining Cost ($)", `=SUM(${range("S")})`]);
+  rows.push(["ERS Credit ($)", `=SUM(${range("T")})`]);
+  rows.push(["Net All-In Mining Cost ($)", "=B25-B24-B26"]);
+  rows.push(["Gross All-In Rate ($/kWh)", "=IF(B23=0,0,B25/(B23*1000))"]);
+  rows.push(["Net All-In Rate ($/kWh)", "=IF(B23=0,0,B27/(B23*1000))"]);
+  rows.push(["Curtailed Exposure Avoided ($)", `=SUM(${range("U")})`]);
+  rows.push(["Sell-Back Hours", `=SUMIFS(${range("G")},${range("J")},"sell_back",${range("H")},1)`]);
+  rows.push([]);
+  rows.push([
+    "Interval Start","Year","Market","Settlement Point","Source","Price ($/MWh)","Hours","Included","4CP Managed",
+    "Status","Interval MWh","Compute MWh","Curtail MWh","Sell-Back MWh","Market Cost ($)","Sell-Back Revenue ($)",
+    "Delivered Adder (¢/kWh)","Delivered Adder ($/MWh)","All-In Compute Cost ($)","ERS Credit ($)","Curtailed Exposure ($)","Net Mining Impact ($)"
+  ]);
+
+  filteredHistory.forEach((point, index) => {
+    const row = dataStartRow + index;
+    rows.push([
+      point.intervalStart,
+      new Date(point.intervalStart).getUTCFullYear(),
+      point.market,
+      point.settlementPoint,
+      point.source,
+      point.priceUsdPerMWh,
+      `=IF(C${row}="RTM",5/60,1)`,
+      `=--(AND(OR($B$9="all",B${row}=$B$9),OR($B$10="all",C${row}=$B$10)))`,
+      `=--(B${row}<>2024)`,
+      `=IF(H${row}=0,"excluded",IF(F${row}>=$B$7,"sell_back",IF(F${row}>=$B$6,"curtail","compute")))`,
+      `=$B$5*G${row}*H${row}`,
+      `=IF(J${row}="compute",K${row},0)`,
+      `=IF(J${row}="curtail",K${row},0)`,
+      `=IF(J${row}="sell_back",K${row},0)`,
+      `=IF(J${row}="compute",F${row}*L${row},0)`,
+      `=IF(J${row}="sell_back",F${row}*N${row},0)`,
+      `=IF(B${row}=2024,$B$14,$B$21)`,
+      `=Q${row}*10`,
+      `=IF(J${row}="compute",(F${row}+R${row})*L${row},0)`,
+      `=IF(J${row}="compute",($B$8/100)*L${row}*1000,0)`,
+      `=IF(J${row}="curtail",F${row}*M${row},0)`,
+      `=IF(J${row}="compute",-S${row}+T${row},IF(J${row}="sell_back",P${row},0))`
+    ]);
+  });
+
+  return toCsv(rows);
+}
+
 async function scrapeLiveSouthPrice(): Promise<LivePrice | null> {
   const sources = [
     {
@@ -405,6 +687,28 @@ app.get("/api/dashboard", async (_req, res) => {
   });
 
   res.json({ livePrice, priceHistory: filteredHistory, strikeConfig, documents, availableYears });
+});
+
+app.get("/api/export/:mode", async (req, res) => {
+  await ensureStorage();
+  const priceHistory = await readJson<PricePoint[]>(pricePath);
+  const savedConfig = await readJson<StrikeConfig>(configPath);
+
+  const year = typeof req.query.year === "string" ? req.query.year : "all";
+  const market = typeof req.query.market === "string" ? req.query.market : "all";
+  const mode = req.params.mode === "flat" ? "flat" : "model";
+  const scenario: ExportScenario = {
+    siteLoadMw: Number(req.query.siteLoadMw ?? savedConfig.siteLoadMw),
+    curtailStrikeUsdPerMWh: Number(req.query.curtailStrikeUsdPerMWh ?? savedConfig.curtailStrikeUsdPerMWh),
+    sellBackStrikeUsdPerMWh: Number(req.query.sellBackStrikeUsdPerMWh ?? savedConfig.sellBackStrikeUsdPerMWh),
+    ersOffsetUsdPerKWh: Number(req.query.ersOffsetUsdPerKWh ?? 0)
+  };
+
+  const csv = buildExportCsv(priceHistory, scenario, year, market, mode);
+  const fileName = `clutch-dashboard-${mode}-${year}-${market}.csv`;
+  res.setHeader("Content-Type", "text/csv; charset=utf-8");
+  res.setHeader("Content-Disposition", `attachment; filename="${fileName}"`);
+  res.send(csv);
 });
 
 app.post("/api/config", async (req, res) => {
