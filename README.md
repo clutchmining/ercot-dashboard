@@ -32,6 +32,26 @@ npm run build
 npm start
 ```
 
+## Excel export
+
+Use the export script to generate Excel-friendly files from the same pricing history and strike logic used in the dashboard:
+
+```bash
+npm run export:excel
+```
+
+This writes files into `exports/`:
+
+- `dashboard-excel-model.csv`: single-sheet Excel model with editable inputs in column `B` and formulas for uptime, sell-back revenue, and all-in `$ / kWh`
+- `dashboard-intervals-flat.csv`: clean interval-level export for pivot tables or custom workbook work
+- `dashboard-export-notes.txt`: quick usage notes
+
+Optional filters:
+
+```bash
+node scripts/export-excel-model.mjs --year=2026 --market=RTM
+```
+
 ## Render deployment
 
 This repo includes [render.yaml](/Users/jl/energy-price-app/render.yaml) for a single-service deploy.

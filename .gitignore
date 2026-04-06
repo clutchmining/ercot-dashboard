@@ -1,6 +1,7 @@
 node_modules/
 dist/
 .DS_Store
+exports/
 
 data/uploads/
 data/documents.json
