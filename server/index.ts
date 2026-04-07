@@ -453,12 +453,34 @@ function toCsv(rows: Array<Array<string | number>>) {
   return rows.map((row) => row.map(csvEscape).join(",")).join("\n");
 }
 
-function buildExportWorkbook(history: PricePoint[], scenario: ExportScenario, selectedYear: string, selectedMarket: string) {
-  const filteredHistory = history.filter((point) => {
-    const matchesYear = selectedYear === "all" || point.intervalStart.startsWith(selectedYear);
+function filterHistory(
+  history: PricePoint[],
+  selectedYear: string,
+  selectedMarket: string,
+  start?: string,
+  end?: string
+) {
+  const startDate = start ? new Date(`${start}T00:00:00Z`) : null;
+  const endDate = end ? new Date(`${end}T23:59:59Z`) : null;
+  return history.filter((point) => {
+    const itemDate = new Date(point.intervalStart);
+    const matchesYear = startDate || endDate ? true : selectedYear === "all" || point.intervalStart.startsWith(selectedYear);
     const matchesMarket = selectedMarket === "all" || point.market === selectedMarket;
-    return matchesYear && matchesMarket;
+    const matchesStart = !startDate || itemDate >= startDate;
+    const matchesEnd = !endDate || itemDate <= endDate;
+    return matchesYear && matchesMarket && matchesStart && matchesEnd;
   });
+}
+
+function buildExportWorkbook(
+  history: PricePoint[],
+  scenario: ExportScenario,
+  selectedYear: string,
+  selectedMarket: string,
+  start?: string,
+  end?: string
+) {
+  const filteredHistory = filterHistory(history, selectedYear, selectedMarket, start, end);
 
   const workbook = XLSX.utils.book_new();
 
@@ -638,13 +660,11 @@ function buildExportCsv(
   scenario: ExportScenario,
   selectedYear: string,
   selectedMarket: string,
-  mode: "model" | "flat"
+  mode: "model" | "flat",
+  start?: string,
+  end?: string
 ) {
-  const filteredHistory = history.filter((point) => {
-    const matchesYear = selectedYear === "all" || point.intervalStart.startsWith(selectedYear);
-    const matchesMarket = selectedMarket === "all" || point.market === selectedMarket;
-    return matchesYear && matchesMarket;
-  });
+  const filteredHistory = filterHistory(history, selectedYear, selectedMarket, start, end);
   const summary = summarizeHistory(filteredHistory, scenario);
   const miningUptimePct = summary.totalHours === 0 ? 0 : (summary.computeHours / summary.totalHours) * 100;
   const modernYearShare = averageHours(filteredHistory, scenario, (item) => !item.intervalStart.startsWith("2024"));
@@ -859,14 +879,29 @@ app.get("/api/dashboard", async (_req, res) => {
 
   const year = typeof _req.query.year === "string" ? _req.query.year : "all";
   const market = typeof _req.query.market === "string" ? _req.query.market : "all";
+  const start = typeof _req.query.start === "string" ? _req.query.start : "";
+  const end = typeof _req.query.end === "string" ? _req.query.end : "";
+  const startDate = start ? new Date(`${start}T00:00:00Z`) : null;
+  const endDate = end ? new Date(`${end}T23:59:59Z`) : null;
   const availableYears = [...new Set(priceHistory.map((item) => item.intervalStart.slice(0, 4)))].sort();
   const filteredHistory = priceHistory.filter((item) => {
-    const matchesYear = year === "all" || item.intervalStart.startsWith(year);
+    const itemDate = new Date(item.intervalStart);
+    const matchesYear = startDate || endDate ? true : year === "all" || item.intervalStart.startsWith(year);
     const matchesMarket = market === "all" || item.market === market;
-    return matchesYear && matchesMarket;
+    const matchesStart = !startDate || itemDate >= startDate;
+    const matchesEnd = !endDate || itemDate <= endDate;
+    return matchesYear && matchesMarket && matchesStart && matchesEnd;
   });
 
-  res.json({ livePrice, priceHistory: filteredHistory, strikeConfig, documents, availableYears });
+  res.json({
+    livePrice,
+    priceHistory: filteredHistory,
+    strikeConfig,
+    documents,
+    availableYears,
+    earliestIntervalStart: priceHistory[0]?.intervalStart ?? null,
+    latestIntervalStart: priceHistory.at(-1)?.intervalStart ?? null
+  });
 });
 
 app.get("/api/export/:mode", async (req, res) => {
@@ -876,6 +911,8 @@ app.get("/api/export/:mode", async (req, res) => {
 
   const year = typeof req.query.year === "string" ? req.query.year : "all";
   const market = typeof req.query.market === "string" ? req.query.market : "all";
+  const start = typeof req.query.start === "string" ? req.query.start : "";
+  const end = typeof req.query.end === "string" ? req.query.end : "";
   const mode = req.params.mode === "flat" ? "flat" : req.params.mode === "workbook" ? "workbook" : "model";
   const scenario: ExportScenario = {
     siteLoadMw: Number(req.query.siteLoadMw ?? savedConfig.siteLoadMw),
@@ -885,7 +922,7 @@ app.get("/api/export/:mode", async (req, res) => {
   };
 
   if (mode === "workbook") {
-    const workbook = buildExportWorkbook(priceHistory, scenario, year, market);
+    const workbook = buildExportWorkbook(priceHistory, scenario, year, market, start, end);
     const fileName = `clutch-dashboard-workbook-${year}-${market}.xlsx`;
     res.setHeader(
       "Content-Type",
@@ -896,7 +933,7 @@ app.get("/api/export/:mode", async (req, res) => {
     return;
   }
 
-  const csv = buildExportCsv(priceHistory, scenario, year, market, mode);
+  const csv = buildExportCsv(priceHistory, scenario, year, market, mode, start, end);
   const fileName = `clutch-dashboard-${mode}-${year}-${market}.csv`;
   res.setHeader("Content-Type", "text/csv; charset=utf-8");
   res.setHeader("Content-Disposition", `attachment; filename="${fileName}"`);

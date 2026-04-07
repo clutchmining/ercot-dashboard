@@ -5,6 +5,8 @@ import { deriveDecisions, summarizeDecisions } from "./lib/logic";
 import type { DashboardPayload, StrikeConfig } from "./lib/types";
 import clutchLogo from "./assets/clutch-logo-2026.png";
 
+type DatePreset = "2024" | "2025" | "2026" | "all" | "this_month" | "rolling_30" | "rolling_12" | "custom";
+
 const emptyConfig: StrikeConfig = {
   siteLoadMw: 25,
   curtailStrikeUsdPerMWh: 75,
@@ -121,16 +123,86 @@ export function App() {
   const [ersOffsetUsdPerKWh, setErsOffsetUsdPerKWh] = useState(defaultErsOffsetUsdPerKWh);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string>("");
-  const [selectedYear, setSelectedYear] = useState<string>("2026");
+  const [selectedPreset, setSelectedPreset] = useState<DatePreset>("2026");
+  const [customStartDate, setCustomStartDate] = useState<string>("");
+  const [customEndDate, setCustomEndDate] = useState<string>("");
   const [selectedMarket, setSelectedMarket] = useState<"all" | "RTM" | "DAM">("all");
 
-  async function loadDashboard(year = selectedYear, market = selectedMarket) {
-    const response = await fetch(`/api/dashboard?year=${year}&market=${market}`);
+  function formatDateInput(date: Date) {
+    return date.toISOString().slice(0, 10);
+  }
+
+  function buildDateQuery() {
+    const now = new Date();
+    if (selectedPreset === "custom") {
+      return {
+        start: customStartDate,
+        end: customEndDate
+      };
+    }
+
+    if (selectedPreset === "this_month") {
+      const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
+      return { start: formatDateInput(start), end: formatDateInput(now) };
+    }
+
+    if (selectedPreset === "rolling_30") {
+      const start = new Date(now);
+      start.setUTCDate(start.getUTCDate() - 29);
+      return { start: formatDateInput(start), end: formatDateInput(now) };
+    }
+
+    if (selectedPreset === "rolling_12") {
+      const start = new Date(now);
+      start.setUTCFullYear(start.getUTCFullYear() - 1);
+      start.setUTCDate(start.getUTCDate() + 1);
+      return { start: formatDateInput(start), end: formatDateInput(now) };
+    }
+
+    return {};
+  }
+
+  async function loadDashboard(preset = selectedPreset, market = selectedMarket) {
+    const params = new URLSearchParams({ market });
+    if (preset === "2024" || preset === "2025" || preset === "2026" || preset === "all") {
+      params.set("year", preset);
+    } else {
+      params.set("year", "all");
+      const nextWindow =
+        preset === selectedPreset
+          ? buildDateQuery()
+          : (() => {
+              const now = new Date();
+              if (preset === "this_month") {
+                return {
+                  start: formatDateInput(new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1))),
+                  end: formatDateInput(now)
+                };
+              }
+              if (preset === "rolling_30") {
+                const start = new Date(now);
+                start.setUTCDate(start.getUTCDate() - 29);
+                return { start: formatDateInput(start), end: formatDateInput(now) };
+              }
+              if (preset === "rolling_12") {
+                const start = new Date(now);
+                start.setUTCFullYear(start.getUTCFullYear() - 1);
+                start.setUTCDate(start.getUTCDate() + 1);
+                return { start: formatDateInput(start), end: formatDateInput(now) };
+              }
+              return { start: customStartDate, end: customEndDate };
+            })();
+
+      if (nextWindow.start) params.set("start", nextWindow.start);
+      if (nextWindow.end) params.set("end", nextWindow.end);
+    }
+
+    const response = await fetch(`/api/dashboard?${params.toString()}`);
     const payload: DashboardPayload = await response.json();
     setData(payload);
     setConfig(payload.strikeConfig);
-    if (year !== "all" && !payload.availableYears.includes(year)) {
-      setSelectedYear(payload.availableYears.at(-1) ?? "all");
+    if ((preset === "2024" || preset === "2025" || preset === "2026") && !payload.availableYears.includes(preset)) {
+      setSelectedPreset((payload.availableYears.at(-1) as DatePreset | undefined) ?? "all");
     }
   }
 
@@ -138,7 +210,7 @@ export function App() {
     loadDashboard().catch((error) => {
       setMessage(error instanceof Error ? error.message : "Failed to load dashboard.");
     });
-  }, [selectedYear, selectedMarket]);
+  }, [selectedPreset, selectedMarket, customStartDate, customEndDate]);
 
   const availableYears = data ? ["all", ...data.availableYears] : ["all"];
   const decisions = deriveDecisions(data?.priceHistory ?? [], config);
@@ -154,6 +226,9 @@ export function App() {
       : `${new Date(decisions[0].intervalStart).toLocaleDateString()} - ${new Date(
           decisions[decisions.length - 1].intervalStart
         ).toLocaleDateString()}`;
+  const livePublishedLabel = data?.livePrice
+    ? new Date(data.livePrice.publishedAt).toLocaleString()
+    : "Unavailable";
   const modernYearShare = averageHours(decisions, (item) => !item.intervalStart.startsWith("2024"));
   const fourCpEligibilityShare = averageHours(decisions, (item) => isFourCpManagedInterval(item.intervalStart));
   const modernAdderModel = calculateModernAdderModel(
@@ -193,6 +268,18 @@ export function App() {
       modernAdderModel.deliveredAdderAfterFourCpUsdPerKWh -
       ersOffsetUsdPerKWh
     : 0;
+
+  function selectPreset(nextPreset: DatePreset) {
+    if (nextPreset === "custom" && data?.earliestIntervalStart && data?.latestIntervalStart) {
+      if (!customStartDate) {
+        setCustomStartDate(data.earliestIntervalStart.slice(0, 10));
+      }
+      if (!customEndDate) {
+        setCustomEndDate(data.latestIntervalStart.slice(0, 10));
+      }
+    }
+    setSelectedPreset(nextPreset);
+  }
 
   async function saveConfig() {
     setBusy(true);
@@ -234,13 +321,20 @@ export function App() {
     setMessage("");
     try {
       const params = new URLSearchParams({
-        year: selectedYear,
         market: selectedMarket,
         siteLoadMw: String(config.siteLoadMw),
         curtailStrikeUsdPerMWh: String(config.curtailStrikeUsdPerMWh),
         sellBackStrikeUsdPerMWh: String(config.sellBackStrikeUsdPerMWh),
         ersOffsetUsdPerKWh: String(ersOffsetUsdPerKWh)
       });
+      if (selectedPreset === "2024" || selectedPreset === "2025" || selectedPreset === "2026" || selectedPreset === "all") {
+        params.set("year", selectedPreset);
+      } else {
+        params.set("year", "all");
+        const window = buildDateQuery();
+        if (window.start) params.set("start", window.start);
+        if (window.end) params.set("end", window.end);
+      }
       const response = await fetch(`/api/export/${mode}?${params.toString()}`);
       if (!response.ok) {
         throw new Error("Export failed.");
@@ -251,7 +345,7 @@ export function App() {
       const anchor = document.createElement("a");
       anchor.href = url;
       const extension = mode === "workbook" ? "xlsx" : "csv";
-      anchor.download = `clutch-dashboard-${mode}-${selectedYear}-${selectedMarket}.${extension}`;
+      anchor.download = `clutch-dashboard-${mode}-${selectedPreset}-${selectedMarket}.${extension}`;
       document.body.appendChild(anchor);
       anchor.click();
       anchor.remove();
@@ -319,6 +413,10 @@ export function App() {
               <strong>{data?.livePrice ? `$${liveAllInRateUsdPerKWh.toFixed(4)}/kWh` : "Unavailable"}</strong>
             </div>
             <div>
+              <span className="muted small">Live updated</span>
+              <strong>{livePublishedLabel}</strong>
+            </div>
+            <div>
               <span className="muted small">Coverage</span>
               <strong>{dateRange}</strong>
             </div>
@@ -340,10 +438,29 @@ export function App() {
               {availableYears.map((year) => (
                 <button
                   key={year}
-                  className={`chip ${selectedYear === year ? "chip-active" : ""}`}
-                  onClick={() => setSelectedYear(year)}
+                  className={`chip ${selectedPreset === year ? "chip-active" : ""}`}
+                  onClick={() => selectPreset(year as DatePreset)}
                 >
                   {year === "all" ? "All" : year}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="filter-group">
+            <span className="muted small">Date Scenario</span>
+            <div className="chip-row">
+              {([
+                ["this_month", "This Month"],
+                ["rolling_30", "Rolling 30D"],
+                ["rolling_12", "Rolling 12M"],
+                ["custom", "Custom"]
+              ] as const).map(([preset, label]) => (
+                <button
+                  key={preset}
+                  className={`chip ${selectedPreset === preset ? "chip-active" : ""}`}
+                  onClick={() => selectPreset(preset)}
+                >
+                  {label}
                 </button>
               ))}
             </div>
@@ -362,6 +479,18 @@ export function App() {
               ))}
             </div>
           </div>
+          {selectedPreset === "custom" ? (
+            <div className="date-grid">
+              <label className="date-field">
+                <span className="muted small">Start date</span>
+                <input type="date" value={customStartDate} onChange={(event) => setCustomStartDate(event.target.value)} />
+              </label>
+              <label className="date-field">
+                <span className="muted small">End date</span>
+                <input type="date" value={customEndDate} onChange={(event) => setCustomEndDate(event.target.value)} />
+              </label>
+            </div>
+          ) : null}
           <div className="slider-grid">
             {renderSlider("Load", config.siteLoadMw, 1, 250, 1, (value) =>
               setConfig((current) => ({ ...current, siteLoadMw: value })), " MW")}

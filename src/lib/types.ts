@@ -42,4 +42,6 @@ export interface DashboardPayload {
   strikeConfig: StrikeConfig;
   documents: DocumentRecord[];
   availableYears: string[];
+  earliestIntervalStart?: string | null;
+  latestIntervalStart?: string | null;
 }
