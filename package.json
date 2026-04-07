@@ -10,7 +10,8 @@
     "build": "vite build && esbuild server/index.ts --bundle --platform=node --format=cjs --outfile=dist/server.cjs",
     "start": "NODE_ENV=production node dist/server.cjs",
     "seed:2024": "node scripts/seed-2024-data.mjs",
-    "export:excel": "node scripts/export-excel-model.mjs"
+    "export:excel": "node scripts/export-excel-model.mjs",
+    "build:workbook": "node scripts/build-dashboard-workbook.mjs"
   },
   "dependencies": {
     "csv-parse": "^5.5.6",
