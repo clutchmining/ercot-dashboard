@@ -220,15 +220,22 @@ export function App() {
     .filter((item) => item.status === "sell_back")
     .sort((a, b) => b.priceUsdPerMWh - a.priceUsdPerMWh)
     .slice(0, 8);
+  const livePublishedAt = data?.livePrice ? new Date(data.livePrice.publishedAt) : null;
+  const latestDecisionAt = decisions.length === 0 ? null : new Date(decisions[decisions.length - 1].intervalStart);
+  const canUseLiveCoverageEnd =
+    !!livePublishedAt &&
+    selectedPreset !== "2024" &&
+    selectedPreset !== "2025" &&
+    (!customEndDate || customEndDate >= formatDateInput(livePublishedAt));
+  const coverageEndAt =
+    latestDecisionAt && livePublishedAt && canUseLiveCoverageEnd && livePublishedAt > latestDecisionAt
+      ? livePublishedAt
+      : latestDecisionAt;
   const dateRange =
     decisions.length === 0
       ? "No imported history"
-      : `${new Date(decisions[0].intervalStart).toLocaleDateString()} - ${new Date(
-          decisions[decisions.length - 1].intervalStart
-        ).toLocaleDateString()}`;
-  const livePublishedLabel = data?.livePrice
-    ? new Date(data.livePrice.publishedAt).toLocaleString()
-    : "Unavailable";
+      : `${new Date(decisions[0].intervalStart).toLocaleDateString()} - ${coverageEndAt?.toLocaleDateString()}`;
+  const livePublishedLabel = livePublishedAt ? livePublishedAt.toLocaleString() : "Unavailable";
   const modernYearShare = averageHours(decisions, (item) => !item.intervalStart.startsWith("2024"));
   const fourCpEligibilityShare = averageHours(decisions, (item) => isFourCpManagedInterval(item.intervalStart));
   const modernAdderModel = calculateModernAdderModel(
@@ -314,44 +321,6 @@ export function App() {
       setMessage(error instanceof Error ? error.message : "Upload failed.");
     } finally {
       setBusy(false);
-    }
-  }
-
-  async function downloadExport(mode: "workbook" | "model" | "flat") {
-    setMessage("");
-    try {
-      const params = new URLSearchParams({
-        market: selectedMarket,
-        siteLoadMw: String(config.siteLoadMw),
-        curtailStrikeUsdPerMWh: String(config.curtailStrikeUsdPerMWh),
-        sellBackStrikeUsdPerMWh: String(config.sellBackStrikeUsdPerMWh),
-        ersOffsetUsdPerKWh: String(ersOffsetUsdPerKWh)
-      });
-      if (selectedPreset === "2024" || selectedPreset === "2025" || selectedPreset === "2026" || selectedPreset === "all") {
-        params.set("year", selectedPreset);
-      } else {
-        params.set("year", "all");
-        const window = buildDateQuery();
-        if (window.start) params.set("start", window.start);
-        if (window.end) params.set("end", window.end);
-      }
-      const response = await fetch(`/api/export/${mode}?${params.toString()}`);
-      if (!response.ok) {
-        throw new Error("Export failed.");
-      }
-
-      const blob = await response.blob();
-      const url = URL.createObjectURL(blob);
-      const anchor = document.createElement("a");
-      anchor.href = url;
-      const extension = mode === "workbook" ? "xlsx" : "csv";
-      anchor.download = `clutch-dashboard-${mode}-${selectedPreset}-${selectedMarket}.${extension}`;
-      document.body.appendChild(anchor);
-      anchor.click();
-      anchor.remove();
-      URL.revokeObjectURL(url);
-    } catch (error) {
-      setMessage(error instanceof Error ? error.message : "Export failed.");
     }
   }
 
@@ -534,20 +503,9 @@ export function App() {
                 ERS offset is a net credit assumption from realized program revenue minus ERS-related charges shown in the 2025-2026 bills.
               </p>
             </div>
-            <div className="button-row">
-              <button type="button" className="secondary-button" onClick={() => downloadExport("workbook")}>
-                Download Excel Workbook
-              </button>
-              <button type="button" className="secondary-button" onClick={() => downloadExport("model")}>
-                Download Formula CSV
-              </button>
-              <button type="button" className="secondary-button" onClick={() => downloadExport("flat")}>
-                Download Flat CSV
-              </button>
-              <button onClick={saveConfig} disabled={busy}>
-                Save
-              </button>
-            </div>
+            <button onClick={saveConfig} disabled={busy}>
+              Save
+            </button>
           </div>
         </section>
 
