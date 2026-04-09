@@ -477,6 +477,50 @@ function filterHistory(
   });
 }
 
+function appendLivePricePoint(
+  filteredHistory: PricePoint[],
+  livePrice: LivePrice | null,
+  selectedMarket: string,
+  start?: string,
+  end?: string
+) {
+  if (!livePrice) {
+    return filteredHistory;
+  }
+
+  if (selectedMarket !== "all" && selectedMarket !== "RTM") {
+    return filteredHistory;
+  }
+
+  const liveTimestamp = new Date(livePrice.publishedAt);
+  const startDate = start ? new Date(`${start}T00:00:00Z`) : null;
+  const endDate = end ? new Date(`${end}T23:59:59Z`) : null;
+
+  if (startDate && liveTimestamp < startDate) {
+    return filteredHistory;
+  }
+
+  if (endDate && liveTimestamp > endDate) {
+    return filteredHistory;
+  }
+
+  const syntheticPoint: PricePoint = {
+    id: `live-${livePrice.publishedAt}-${livePrice.settlementPoint}`,
+    intervalStart: livePrice.publishedAt,
+    settlementPoint: livePrice.settlementPoint === "HB_SOUTH" ? "LZ_SOUTH" : livePrice.settlementPoint,
+    market: "RTM",
+    priceUsdPerMWh: livePrice.priceUsdPerMWh,
+    source: livePrice.source
+  };
+
+  const alreadyPresent = filteredHistory.some((item) => item.intervalStart === syntheticPoint.intervalStart);
+  if (alreadyPresent) {
+    return filteredHistory;
+  }
+
+  return [...filteredHistory, syntheticPoint].sort((a, b) => a.intervalStart.localeCompare(b.intervalStart));
+}
+
 function buildExportWorkbook(
   history: PricePoint[],
   scenario: ExportScenario,
@@ -897,10 +941,11 @@ app.get("/api/dashboard", async (_req, res) => {
     const matchesEnd = !endDate || itemDate <= endDate;
     return matchesYear && matchesMarket && matchesStart && matchesEnd;
   });
+  const historyWithLive = appendLivePricePoint(filteredHistory, livePrice, market, start, end);
 
   res.json({
     livePrice,
-    priceHistory: filteredHistory,
+    priceHistory: historyWithLive,
     strikeConfig,
     documents,
     availableYears,
