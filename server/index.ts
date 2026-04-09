@@ -87,6 +87,8 @@ const aepPrimaryDeliveryTariff = {
 };
 
 const averageBillingHoursPerMonth = 730;
+let historySyncPromise: Promise<number> | null = null;
+let lastHistorySyncAt = 0;
 
 app.use(express.json());
 
@@ -521,6 +523,170 @@ function appendLivePricePoint(
   return [...filteredHistory, syntheticPoint].sort((a, b) => a.intervalStart.localeCompare(b.intervalStart));
 }
 
+function formatErcotDay(date: Date) {
+  const year = date.getUTCFullYear();
+  const month = String(date.getUTCMonth() + 1).padStart(2, "0");
+  const day = String(date.getUTCDate()).padStart(2, "0");
+  return `${year}${month}${day}`;
+}
+
+function stripTags(value: string) {
+  return value.replace(/<[^>]+>/g, "").replace(/&nbsp;/g, " ").trim();
+}
+
+function extractTableRows(html: string) {
+  const tableMatch = html.match(/<table[\s\S]*?<\/table>/i);
+  if (!tableMatch) {
+    return [];
+  }
+
+  return Array.from(tableMatch[0].matchAll(/<tr[\s\S]*?>([\s\S]*?)<\/tr>/gi)).map(([, rowHtml]) =>
+    Array.from(rowHtml.matchAll(/<t[hd][^>]*>([\s\S]*?)<\/t[hd]>/gi)).map(([, cellHtml]) => stripTags(cellHtml))
+  );
+}
+
+function buildUtcLikeTimestamp(dateText: string, endingText: string, market: Market) {
+  const dateMatch = dateText.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
+  if (!dateMatch) {
+    return null;
+  }
+
+  const [, month, day, year] = dateMatch;
+  if (market === "RTM") {
+    const intervalMatch = endingText.match(/^(\d{2})(\d{2})$/);
+    if (!intervalMatch) {
+      return null;
+    }
+    const endingHour = Number(intervalMatch[1]);
+    const endingMinute = Number(intervalMatch[2]);
+    const totalEndingMinutes = endingHour * 60 + endingMinute;
+    const startMinutes = totalEndingMinutes - 15;
+    const startHour = Math.floor(startMinutes / 60);
+    const startMinute = startMinutes % 60;
+    return new Date(Date.UTC(Number(year), Number(month) - 1, Number(day), startHour, startMinute, 0)).toISOString();
+  }
+
+  const hourEnding = Number(endingText.trim());
+  if (Number.isNaN(hourEnding)) {
+    return null;
+  }
+  return new Date(Date.UTC(Number(year), Number(month) - 1, Number(day), hourEnding - 1, 0, 0)).toISOString();
+}
+
+function parseSettlementPointDailyPage(html: string, market: Market, source: string): PricePoint[] {
+  const rows = extractTableRows(html);
+  if (rows.length < 2) {
+    return [];
+  }
+
+  const header = rows[0];
+  const settlementIndex = header.findIndex((value) => value === "LZ_SOUTH");
+  if (settlementIndex < 0) {
+    return [];
+  }
+
+  const dateIndex = header.findIndex((value) => value === "Oper Day");
+  const endingIndex = header.findIndex((value) => value === "Interval Ending" || value === "Hour Ending");
+  if (dateIndex < 0 || endingIndex < 0) {
+    return [];
+  }
+
+  return rows
+    .slice(1)
+    .map((row) => {
+      const intervalStart = buildUtcLikeTimestamp(row[dateIndex] ?? "", row[endingIndex] ?? "", market);
+      const priceUsdPerMWh = Number(row[settlementIndex]);
+      if (!intervalStart || Number.isNaN(priceUsdPerMWh)) {
+        return null;
+      }
+      return {
+        id: `${source}-${intervalStart}-LZ_SOUTH`,
+        intervalStart,
+        settlementPoint: "LZ_SOUTH",
+        market,
+        priceUsdPerMWh,
+        source
+      } satisfies PricePoint;
+    })
+    .filter((item): item is PricePoint => Boolean(item));
+}
+
+async function fetchDailySettlementPoints(day: Date, market: Market) {
+  const dayToken = formatErcotDay(day);
+  const pageName = market === "RTM" ? "real_time_spp" : "dam_spp";
+  const url = `https://www.ercot.com/content/cdr/html/${dayToken}_${pageName}.html`;
+  const response = await fetch(url);
+  if (!response.ok) {
+    return [];
+  }
+  const html = await response.text();
+  return parseSettlementPointDailyPage(html, market, `${dayToken}_${pageName}.html`);
+}
+
+function dedupePriceHistory(history: PricePoint[]) {
+  const keyed = new Map<string, PricePoint>();
+  for (const item of history) {
+    keyed.set(`${item.market}|${item.intervalStart}|${item.settlementPoint}`, item);
+  }
+  return [...keyed.values()].sort((a, b) => a.intervalStart.localeCompare(b.intervalStart));
+}
+
+async function syncMissingErcotHistory(force = false) {
+  if (historySyncPromise) {
+    return historySyncPromise;
+  }
+
+  if (!force && Date.now() - lastHistorySyncAt < 15 * 60 * 1000) {
+    return 0;
+  }
+
+  historySyncPromise = (async () => {
+    const current = await readJson<PricePoint[]>(pricePath);
+    const latestPoint = current.at(-1);
+    const today = new Date();
+    const todayUtcDay = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate()));
+    let startDay = latestPoint
+      ? new Date(Date.UTC(
+          Number(latestPoint.intervalStart.slice(0, 4)),
+          Number(latestPoint.intervalStart.slice(5, 7)) - 1,
+          Number(latestPoint.intervalStart.slice(8, 10))
+        ))
+      : todayUtcDay;
+
+    if (startDay > todayUtcDay) {
+      startDay = todayUtcDay;
+    }
+
+    const fetched: PricePoint[] = [];
+    for (let cursor = new Date(startDay); cursor <= todayUtcDay; cursor.setUTCDate(cursor.getUTCDate() + 1)) {
+      const [damRows, rtmRows] = await Promise.all([
+        fetchDailySettlementPoints(new Date(cursor), "DAM"),
+        fetchDailySettlementPoints(new Date(cursor), "RTM")
+      ]);
+      fetched.push(...damRows, ...rtmRows);
+    }
+
+    if (fetched.length > 0) {
+      const next = dedupePriceHistory([...current, ...fetched]);
+      await writeJson(pricePath, next);
+      console.log(`ERCOT sync wrote ${fetched.length} rows. History now ${next.length} rows.`);
+    }
+
+    if (fetched.length === 0) {
+      console.log("ERCOT sync found no new rows.");
+    }
+
+    lastHistorySyncAt = Date.now();
+    return fetched.length;
+  })();
+
+  try {
+    return await historySyncPromise;
+  } finally {
+    historySyncPromise = null;
+  }
+}
+
 function buildExportWorkbook(
   history: PricePoint[],
   scenario: ExportScenario,
@@ -913,6 +1079,11 @@ if (process.env.NODE_ENV !== "production") {
 
 app.get("/api/dashboard", async (_req, res) => {
   await ensureStorage();
+  try {
+    await syncMissingErcotHistory();
+  } catch (error) {
+    console.error("ERCOT history sync failed", error);
+  }
   const [priceHistory, documents, strikeConfig] = await Promise.all([
     readJson<PricePoint[]>(pricePath),
     readJson<DocumentRecord[]>(docsPath),
@@ -990,6 +1161,17 @@ app.get("/api/export/:mode", async (req, res) => {
   res.send(csv);
 });
 
+app.post("/api/admin/sync-ercot", async (_req, res) => {
+  await ensureStorage();
+  const imported = await syncMissingErcotHistory(true);
+  const history = await readJson<PricePoint[]>(pricePath);
+  res.json({
+    imported,
+    totalRows: history.length,
+    latestIntervalStart: history.at(-1)?.intervalStart ?? null
+  });
+});
+
 app.post("/api/config", async (req, res) => {
   await ensureStorage();
   const nextConfig = req.body as StrikeConfig;
@@ -1053,6 +1235,14 @@ const port = Number(process.env.PORT ?? 8787);
 const host = process.env.HOST ?? (process.env.NODE_ENV === "production" ? "0.0.0.0" : "127.0.0.1");
 
 ensureStorage().then(() => {
+  syncMissingErcotHistory(true).catch((error) => {
+    console.error("Initial ERCOT history sync failed", error);
+  });
+  setInterval(() => {
+    syncMissingErcotHistory(true).catch((error) => {
+      console.error("Scheduled ERCOT history sync failed", error);
+    });
+  }, 60 * 60 * 1000);
   app.listen(port, host, () => {
     console.log(`Server listening on ${host}:${port}`);
   });

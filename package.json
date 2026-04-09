@@ -11,7 +11,8 @@
     "start": "NODE_ENV=production node dist/server.cjs",
     "seed:2024": "node scripts/seed-2024-data.mjs",
     "export:excel": "node scripts/export-excel-model.mjs",
-    "build:workbook": "node scripts/build-dashboard-workbook.mjs"
+    "build:workbook": "node scripts/build-dashboard-workbook.mjs",
+    "sync:ercot": "node scripts/sync-ercot-daily.mjs"
   },
   "dependencies": {
     "csv-parse": "^5.5.6",
