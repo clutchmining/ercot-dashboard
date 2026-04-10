@@ -55,7 +55,7 @@ const authEnabled = process.env.DASHBOARD_AUTH_ENABLED === "true";
 const dashboardUsername = process.env.DASHBOARD_USERNAME;
 const dashboardPassword = process.env.DASHBOARD_PASSWORD;
 const temporaryGuestUsername = "temp-guest";
-const temporaryGuestPassword = "clutchpower";
+const temporaryGuestPassword = "clutchguest";
 
 const defaultConfig: StrikeConfig = {
   siteLoadMw: 25,
